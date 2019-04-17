@@ -1,8 +1,9 @@
 <launch>
 	<arg name="jackal_speed" default="1.2"/>
+	<!--remap from="/wheel_odo" to="/pioneer_interface/pose"/-->
     <!-- Launch neural net ros wrapper -->
     <node pkg="cadrl_ros" type="cadrl_node.py" name="cadrl_node" output="screen" ns="/JA01">
-        
+
         <!-- Publications -->
         <remap from="~other_vels" to="other_vels"/>
         <remap from="~nn_cmd_vel" to="nn_cmd_vel"/>
@@ -11,7 +12,7 @@
         <remap from="~goal_path_marker" to="goal_path_marker"/>
         <remap from="~agent_marker" to="other_agents_marker"/>
         <remap from="~agent_markers" to="other_agents_markers"/>
-        
+
         <!-- Subscriptions -->
         <remap from="~pose" to="pose"/>
         <remap from="~velocity" to="velocity"/>
@@ -20,9 +21,10 @@
         <remap from="~goal" to="move_base_simple/goal"/>
         <remap from="~clusters" to="cluster/output/clusters"/>
         <remap from="~peds" to="ped_manager/ped_recent"/>
-        
+
         <!-- Parameters -->
         <param name="~jackal_speed" value="$(arg jackal_speed)"/>
 
     </node>
+	<!--node type="rviz" name="rviz" pkg="rviz"/-->
 </launch>

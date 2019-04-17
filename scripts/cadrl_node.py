@@ -4,8 +4,10 @@ import rospy
 import sys
 from std_msgs.msg import Float32, ColorRGBA, Int32
 from geometry_msgs.msg import PoseStamped, Twist, Vector3, Point
-from ford_msgs.msg import PedTrajVec, NNActions, PlannerMode, Clusters
+from navigation_msgs.msg import Pedestrians, PlannerMode
 from visualization_msgs.msg import Marker, MarkerArray
+from tf2_msgs.msg import TFMessage
+from nav_msgs.msg import Odometry
 
 import numpy as np
 import numpy.matlib
@@ -14,11 +16,9 @@ from matplotlib import cm
 import matplotlib.pyplot as plt
 import copy
 import os
-import time
-import random
-import math
 
 import rospkg
+from tf.transformations import euler_from_quaternion
 
 import network
 import agent
@@ -42,21 +42,20 @@ class NN_jackal():
         self.veh_data = veh_data
 
         # self.agent = agent.Agent(0.0, 0.0, 100.0, 100.0, radius, pref_speed, initial_heading, id)
-        
+
         # neural network
         self.nn = nn
         self.actions = actions
         # self.value_net = value_net
         self.operation_mode = PlannerMode()
         self.operation_mode.mode = self.operation_mode.NN
-        
+
         # for subscribers
         self.pose = PoseStamped()
-        self.vel = Vector3()
+        self.vel = Vector3(0.0, 0.0, 0.0)
         self.psi = 0.0
         self.ped_traj_vec = []
         self.other_agents_state = []
-        self.feasible_actions = NNActions()
 
         # for publishers
         self.global_goal = PoseStamped()
@@ -75,10 +74,6 @@ class NN_jackal():
         # visualization
         self.path_marker = Marker()
 
-        # Clusters
-        self.prev_clusters = Clusters()
-        self.current_clusters = Clusters()
-
         # subscribers and publishers
         self.num_poses = 0
         self.num_actions_computed = 0.0
@@ -89,18 +84,13 @@ class NN_jackal():
         self.pub_agent_markers = rospy.Publisher('~agent_markers',MarkerArray,queue_size=1)
         self.pub_path_marker = rospy.Publisher('~path_marker',Marker,queue_size=1)
         self.pub_goal_path_marker = rospy.Publisher('~goal_path_marker',Marker,queue_size=1)
-        self.sub_pose = rospy.Subscriber('~pose',PoseStamped,self.cbPose)
-        self.sub_vel = rospy.Subscriber('~velocity',Vector3,self.cbVel)
-        self.sub_nn_actions = rospy.Subscriber('~safe_actions',NNActions,self.cbNNActions)
+        self.sub_pose = rospy.Subscriber('/tf',TFMessage,self.cbPose)
+        self.sub_vel = rospy.Subscriber('/wheel_odo',Odometry,self.cbVel)
+        #self.sub_vel = rospy.Subscriber('/wheel_odo',Odometry,self.cbPose)
         self.sub_mode = rospy.Subscriber('~mode',PlannerMode, self.cbPlannerMode)
         self.sub_global_goal = rospy.Subscriber('~goal',PoseStamped, self.cbGlobalGoal)
-        
-        self.use_clusters = True
-        # self.use_clusters = False
-        if self.use_clusters:
-            self.sub_clusters = rospy.Subscriber('~clusters',Clusters, self.cbClusters)
-        else:
-            self.sub_peds = rospy.Subscriber('~peds',PedTrajVec, self.cbPeds)
+
+        self.sub_pedestrians = rospy.Subscriber('/pedestrians',Pedestrians, self.cbPedestrians)
 
         # control timer
         self.control_timer = rospy.Timer(rospy.Duration(0.01),self.cbControl)
@@ -116,148 +106,66 @@ class NN_jackal():
         self.goal.header = msg.header
         self.new_subgoal_received = True
 
-    def cbNNActions(self,msg):
-        # if msg.header.seq % 20 == 0:
-        #     self.goal.pose.position.x = msg.subgoal.x
-        #     self.goal.pose.position.y = msg.subgoal.y
-        #     self.goal.header = msg.header
-        #     self.new_subgoal_received = True
-        self.feasible_actions = msg
-
     def cbPlannerMode(self, msg):
         self.operation_mode = msg
         self.operation_mode.mode = self.operation_mode.NN
 
     def cbPose(self, msg):
-        self.num_poses += 1
-        q = msg.pose.orientation
-        self.psi = np.arctan2(2.0*(q.w*q.z + q.x*q.y), 1-2*(q.y*q.y+q.z*q.z)) # bounded by [-pi, pi]
-        self.pose = msg
-        self.visualize_pose(msg.pose.position,msg.pose.orientation)
+        if msg.transforms[0].child_frame_id == "R_robot_base_frame":
+            self.num_poses += 1
+
+            #orientation_q = msg.pose.pose.orientation
+            orientation_q = msg.transforms[0].transform.rotation
+            orientation_list = [orientation_q.x, orientation_q.y, orientation_q.z, orientation_q.w]
+            euler =  euler_from_quaternion(orientation_list)
+            self.psi = euler[2]
+            self.pose.pose.position = msg.transforms[0].transform.translation
+            self.pose.pose.orientation= msg.transforms[0].transform.rotation
+            # Dummy: Set goal to be 4m in front of robot.
+            #self.pose.pose.position = msg.pose.pose.position
+            #self.pose.pose.orientation = msg.pose.pose.orientation
+            self.goal.pose.position.x = self.pose.pose.position.x + 4.0 * np.cos(self.psi)
+            self.goal.pose.position.y = self.pose.pose.position.y + 4.0 * np.sin(self.psi)
+            self.visualize_pose(self.pose.pose.position,self.pose.pose.orientation)
+
+            #vel_ego = msg.twist.twist.linear
+            #speed = np.sqrt(np.square(vel_ego.x) + np.square(vel_ego.y))
+            #self.vel.x = speed * np.cos(self.psi)
+            #self.vel.y = speed * np.sin(self.psi)
 
     def cbVel(self, msg):
-        self.vel = msg
-
-    def cbPeds(self, msg):
-        t_start = rospy.Time.now()
-        self.ped_traj_vec = [ped_traj for ped_traj in msg.ped_traj_vec if len(ped_traj.traj) > 0]
-        num_peds = len(self.ped_traj_vec)
-
-        # compute relative position with respect to the Jackal
-        rel_dist = np.zeros((num_peds, )) 
-        rel_angle = np.zeros((num_peds, )) 
-        # (rel_dist, angle)
-        for i, ped_traj in enumerate(self.ped_traj_vec):
-            rel_x = ped_traj.traj[-1].pose.x - self.pose.pose.position.x
-            rel_y = ped_traj.traj[-1].pose.y - self.pose.pose.position.y
-            rel_dist[i] = np.linalg.norm(np.array([rel_x, rel_y])) 
-            rel_angle[i] = find_angle_diff(np.arctan2(rel_y, rel_x), self.psi)
-
-        # ignore people in the back of Jackal (60 deg cone)
-        valid_inds = np.where(abs(rel_angle)< 5.0 / 6.0 * np.pi)[0]
-
-        # get the n closest agents
-        self.other_agents_state = []
-        if len(valid_inds) == 0:
-            return
-        else:
-            if len(valid_inds) == 1:
-                # print "valid_inds:", valid_inds
-                # print "self.ped_traj_vec:", self.ped_traj_vec
-                valid_inds = valid_inds[0]
-                ped_traj_vec = [self.ped_traj_vec[valid_inds]]
-                rel_dist = np.array([rel_dist[valid_inds]])
-            elif len(valid_inds) > 1:
-                # print 'before', len(self.ped_traj_vec)
-                # print 'valid_inds', valid_inds
-                ped_traj_vec = [self.ped_traj_vec[tt] for tt in valid_inds]
-                # print 'after', len(self.ped_traj_vec)
-                rel_dist = rel_dist[valid_inds]
-
-            # sort other agents by rel_dist
-            # num_neighbors = min(len(rel_dist), self.value_net.num_agents)
-            # print 'num_neighbors', num_neighbors
-            # print 'rel_dist', rel_dist
-            # neighbor_inds = np.argpartition(rel_dist, num_neighbors)[:num_neighbors]
-            if len(rel_dist) > self.value_net.num_agents-1:
-                num_neighbors = self.value_net.num_agents-1
-                neighbor_inds = np.argpartition(rel_dist, num_neighbors)[:num_neighbors]
-            else:
-                neighbor_inds = np.arange(len(rel_dist))
-            # agent state: [pos.x, pos.y, vel.x, vel.y, heading_angle, pref_speed, \
-            #            goals[0].x, goals[0].y, radius, turning_dir]
-            for tt in neighbor_inds:
-                ped_traj = ped_traj_vec[tt]
-                # rel pos, rel vel, size
-                x = ped_traj.traj[-1].pose.x; y = ped_traj.traj[-1].pose.y
-                v_x = ped_traj.traj[-1].velocity.x; v_y = ped_traj.traj[-1].velocity.y
-                radius = PED_RADIUS;turning_dir = 0.0
-                # helper fields
-                heading_angle = np.arctan2(v_y, v_x)
-                pref_speed = np.linalg.norm(np.array([v_x, v_y]))
-                goal_x = x + 5.0; goal_y = y + 5.0
-                
-                # filter speed
-                alpha = 0.2
-                for prev_other_agent_state in self.prev_other_agents_state:
-                    pos_diff = np.linalg.norm(prev_other_agent_state[0:2] - np.array([x,y]))
-                    heading_diff_abs = abs(find_angle_diff(prev_other_agent_state[4], heading_angle))
-                    if pos_diff < 0.5 and heading_diff_abs < np.pi / 4.0:
-                        v_x = alpha * v_x + (1-alpha) * prev_other_agent_state[2]
-                        v_y = alpha * v_y + (1-alpha) * prev_other_agent_state[3]
-
-                        # TODO: find the best match rather than the first match
-                        break
-
-                if pref_speed < 0.2:
-                    pref_speed = 0; v_x = 0; v_y = 0
-                other_agent_state = np.array([x, y, v_x, v_y, heading_angle, pref_speed, \
-                    goal_x, goal_y, radius, turning_dir])
-                self.other_agents_state.append(other_agent_state)
-
-            self.prev_other_agents_state = copy.deepcopy(self.other_agents_state)
-        t_end = rospy.Time.now()
-        # print "cbPeds took:", (t_end - t_start).to_sec(), "sec"
-
-    def cbClusters(self, msg):
+        vel_ego = msg.twist.twist.linear
+        speed = np.sqrt(np.square(vel_ego.x) + np.square(vel_ego.y))
+        self.vel.x = speed * np.cos(self.psi)
+        self.vel.y = speed * np.sin(self.psi)
+    def cbPedestrians(self, msg):
         other_agents = []
 
-
-        xs = []; ys = []; radii = []; labels = []
-        num_clusters = len(msg.labels)
-        for i in range(num_clusters):
-            index = msg.labels[i]
-            x = msg.mean_points[i].x; y = msg.mean_points[i].y
-            v_x = msg.velocities[i].x; v_y = msg.velocities[i].y
-            # radius = PED_RADIUS
-            lower_r = np.linalg.norm(np.array([msg.mean_points[i].x-msg.min_points[i].x, msg.mean_points[i].y-msg.min_points[i].y]))
-            upper_r = np.linalg.norm(np.array([msg.mean_points[i].x-msg.max_points[i].x, msg.mean_points[i].y-msg.max_points[i].y]))
-            inflation_factor = 1.5
-            radius = max(PED_RADIUS, inflation_factor * max(upper_r, lower_r))
+        xs = []; ys = []; radii = []; labels = []; v_xs = []; v_ys = [];
+        num_pedestrians = len(msg.people)
+        for i in range(num_pedestrians):
+            index = i
+            x = msg.people[i].position.x
+            y = msg.people[i].position.y
+            v_x = msg.people[i].velocity.x
+            v_y = msg.people[i].velocity.y
+            radius = max(PED_RADIUS, msg.radii[i])
 
 
-            xs.append(x); ys.append(y); radii.append(radius); labels.append(index)
+            xs.append(x); ys.append(y); radii.append(radius);
+            labels.append(index); v_xs.append(v_x); v_ys.append(v_y);
             # self.visualize_other_agent(x,y,radius,msg.labels[i])
             # helper fields
             heading_angle = np.arctan2(v_y, v_x)
             pref_speed = np.linalg.norm(np.array([v_x, v_y]))
             goal_x = x + 5.0; goal_y = y + 5.0
-            
-            # # filter speed
-            # alpha = 0.2
-            # for prev_other_agent_state in self.prev_other_agents_state:
-            #     pos_diff = np.linalg.norm(prev_other_agent_state[0:2] - np.array([x,y]))
-            #     heading_diff_abs = abs(find_angle_diff(prev_other_agent_state[4], heading_angle))
-            #     if pos_diff < 0.5 and heading_diff_abs < np.pi / 4.0:
-            #         v_x = alpha * v_x + (1-alpha) * prev_other_agent_state[2]
-            #         v_y = alpha * v_y + (1-alpha) * prev_other_agent_state[3]
 
-            #         # TODO: find the best match rather than the first match
-            #         break
             if pref_speed < 0.2:
                 pref_speed = 0; v_x = 0; v_y = 0
             other_agents.append(agent.Agent(x, y, goal_x, goal_y, radius, pref_speed, heading_angle, index))
-        self.visualize_other_agents(xs, ys, radii, labels)
+            other_agents[i].vel_global_frame = np.array([v_x, v_y])
+        if num_pedestrians > 0:
+            self.visualize_other_agents(xs, ys, radii, labels, v_xs, v_ys)
         self.other_agents_state = other_agents
 
     def stop_moving(self):
@@ -278,7 +186,7 @@ class NN_jackal():
             yaw_error -= 2*np.pi
         if yaw_error < -np.pi:
             yaw_error += 2*np.pi
-        twist.angular.z = 2*yaw_error
+        twist.angular.z = yaw_error
 
     def find_vmax(self, d_min, heading_diff):
         # Calculate maximum linear velocity, as a function of error in
@@ -291,7 +199,7 @@ class NN_jackal():
         margin = 0.3
         # y = max(d_min - 0.3, 0.0)
         y = max(d_min, 0.0)
-        # making sure x < y 
+        # making sure x < y
         if x > y:
             x = 0
         w_max = 1
@@ -304,33 +212,24 @@ class NN_jackal():
         return v_max
 
     def cbControl(self, event):
-        if self.goal.header.stamp == rospy.Time(0) or self.stop_moving_flag \
-            and not self.new_global_goal_received:
-            self.stop_moving()
-            return
-        elif self.operation_mode.mode==self.operation_mode.NN:
+        #if self.goal.header.stamp == rospy.Time(0) or self.stop_moving_flag \
+        #    and not self.new_global_goal_received:
+        #    self.stop_moving()
+        #    return
+        if self.operation_mode.mode==self.operation_mode.NN:
             desired_yaw = self.desired_action[1]
             yaw_error = desired_yaw - self.psi
             if abs(yaw_error) > np.pi:
                 yaw_error -= np.sign(yaw_error)*2*np.pi
-            # print 'yaw_error:',yaw_error
-            # max_yaw_error = 0.8
-            # yaw_error = self.desired_action[1]
-            gain = 2
+            gain = 1
             vw = gain*yaw_error
 
             use_d_min = False
-            if True: 
+            if use_d_min:
                 use_d_min = True
-                # print "vmax:", self.find_vmax(self.d_min,yaw_error)
                 vx = min(self.desired_action[0], self.find_vmax(self.d_min,yaw_error))
             else:
                 vx = self.desired_action[0]
-            # print "vx:", vx
-            # elif abs(yaw_error) < max_yaw_error:
-            #     vw = gain*yaw_error
-            # else:
-            #     vw = gain*max_yaw_error*np.sign(yaw_error)
 
             twist = Twist()
             twist.angular.z = vw
@@ -338,11 +237,12 @@ class NN_jackal():
             self.pub_twist.publish(twist)
             self.visualize_action(use_d_min)
             return
-        elif self.operation_mode.mode == self.operation_mode.SPIN_IN_PLACE:
-            print 'Spinning in place.'
+
+        if self.operation_mode.mode == self.operation_mode.SPIN_IN_PLACE:
+            print ('Spinning in place.')
             self.stop_moving_flag = False
             angle_to_goal = np.arctan2(self.global_goal.pose.position.y - self.pose.pose.position.y, \
-                self.global_goal.pose.position.x - self.pose.pose.position.x) 
+                self.global_goal.pose.position.x - self.pose.pose.position.x)
             global_yaw_error = self.psi - angle_to_goal
             if abs(global_yaw_error) > 0.5:
                 vx = 0.0
@@ -352,7 +252,7 @@ class NN_jackal():
                 twist.linear.x = vx
                 self.pub_twist.publish(twist)
             else:
-                print 'Done spinning in place'
+                print ('Done spinning in place')
                 self.operation_mode.mode = self.operation_mode.NN
                 self.new_global_goal_received = False
             return
@@ -362,10 +262,9 @@ class NN_jackal():
 
     def cbComputeActionGA3C(self, event):
         if self.operation_mode.mode!=self.operation_mode.NN:
-            print 'Not in NN mode'
-            print self.operation_mode.mode
+            print ('Not in NN mode')
+            print (self.operation_mode.mode)
             return
-
 
         # construct agent_state
         x = self.pose.pose.position.x; y = self.pose.pose.position.y
@@ -382,23 +281,25 @@ class NN_jackal():
 
         host_agent = agent.Agent(x, y, goal_x, goal_y, radius, pref_speed, heading_angle, 0)
         host_agent.vel_global_frame = np.array([v_x, v_y])
-        # host_agent.print_agent_info()
+        host_agent.update_state([0.0,0.0],0.0)
+        #host_agent.print_agent_info()
 
         other_agents_state = copy.deepcopy(self.other_agents_state)
         obs = host_agent.observe(other_agents_state)[1:]
         obs = np.expand_dims(obs, axis=0)
-        # print "obs:", obs
+        #print ("obs:", obs)
         predictions = self.nn.predict_p(obs, None)[0]
-        # print "predictions:", predictions
+        #print ("predictions:", predictions)
         # print "best action index:", np.argmax(predictions)
         raw_action = copy.deepcopy(self.actions[np.argmax(predictions)])
         action = np.array([pref_speed*raw_action[0], util.wrap(raw_action[1] + self.psi)])
+        if raw_action[0] < 1.0:
+            print ("Slowed down", raw_action[0])
         # print "raw_action:", raw_action
         # print "action:", action
-
         # if close to goal
         kp_v = 0.5
-        kp_r = 1   
+        kp_r = 1
 
         if host_agent.dist_to_goal < 2.0: # and self.percentComplete>=0.9:
             # print "somewhat close to goal"
@@ -424,7 +325,7 @@ class NN_jackal():
         # Display GREEN DOT at NN subgoal
         marker = Marker()
         marker.header.stamp = rospy.Time.now()
-        marker.header.frame_id = 'map'
+        marker.header.frame_id = 'G_ground_frame'
         marker.ns = 'subgoal'
         marker.id = 0
         marker.type = marker.CUBE
@@ -440,7 +341,7 @@ class NN_jackal():
             for i in xrange(len(subgoal_options)):
                 marker = Marker()
                 marker.header.stamp = rospy.Time.now()
-                marker.header.frame_id = 'map'
+                marker.header.frame_id = 'G_ground_frame'
                 marker.ns = 'subgoal'
                 marker.id = i+1
                 marker.type = marker.CUBE
@@ -459,14 +360,14 @@ class NN_jackal():
         # Yellow Box for Vehicle
         marker = Marker()
         marker.header.stamp = rospy.Time.now()
-        marker.header.frame_id = 'map'
+        marker.header.frame_id = 'G_ground_frame'
         marker.ns = 'agent'
         marker.id = 0
         marker.type = marker.CUBE
         marker.action = marker.ADD
         marker.pose.position = pos
         marker.pose.orientation = orientation
-        marker.scale = Vector3(x=0.7,y=0.42,z=1)
+        marker.scale = Vector3(x=0.3,y=0.2,z=1)
         marker.color = ColorRGBA(r=1.0,g=1.0,a=1.0)
         marker.lifetime = rospy.Duration(1.0)
         self.pub_pose_marker.publish(marker)
@@ -474,7 +375,7 @@ class NN_jackal():
         # Red track for trajectory over time
         marker = Marker()
         marker.header.stamp = rospy.Time.now()
-        marker.header.frame_id = 'map'
+        marker.header.frame_id = 'G_ground_frame'
         marker.ns = 'agent'
         marker.id = self.num_poses
         marker.type = marker.CUBE
@@ -486,13 +387,13 @@ class NN_jackal():
         marker.lifetime = rospy.Duration(10.0)
         self.pub_pose_marker.publish(marker)
 
-    def visualize_other_agents(self,xs,ys,radii,labels):
+    def visualize_other_agents(self,xs,ys,radii,labels,vx, vy):
         markers = MarkerArray()
         for i in range(len(xs)):
             # Orange box for other agent
             marker = Marker()
             marker.header.stamp = rospy.Time.now()
-            marker.header.frame_id = 'map'
+            marker.header.frame_id = 'G_ground_frame'
             marker.ns = 'other_agent'
             marker.id = labels[i]
             marker.type = marker.CYLINDER
@@ -505,13 +406,34 @@ class NN_jackal():
             marker.lifetime = rospy.Duration(0.1)
             markers.markers.append(marker)
 
+            # Display BLUE ARROW from current position to NN desired position
+            marker = Marker()
+            marker.header.stamp = rospy.Time.now()
+            marker.header.frame_id = 'G_ground_frame'
+            marker.ns = 'agent_path_arrow'
+            marker.id = labels[i]
+            marker.type = marker.ARROW
+            marker.action = marker.ADD
+            agent_position = Point()
+            agent_position_end = Point()
+            agent_position.x = xs[i]
+            agent_position.y = ys[i]
+            agent_position_end.x = xs[i] + vx[i]
+            agent_position_end.y = ys[i] + vy[i]
+            marker.points.append(agent_position)
+            marker.points.append(agent_position_end)
+            marker.scale = Vector3(x=0.1,y=0.2,z=0.2)
+            marker.color = ColorRGBA(b=1.0,a=1.0)
+            marker.lifetime = rospy.Duration(0.5)
+            markers.markers.append(marker)
+
         self.pub_agent_markers.publish(markers)
 
     def visualize_action(self, use_d_min):
         # Display BLUE ARROW from current position to NN desired position
         marker = Marker()
         marker.header.stamp = rospy.Time.now()
-        marker.header.frame_id = 'map'
+        marker.header.frame_id = 'G_ground_frame'
         marker.ns = 'path_arrow'
         marker.id = 0
         marker.type = marker.ARROW
@@ -526,7 +448,7 @@ class NN_jackal():
         # Display BLUE DOT at NN desired position
         marker = Marker()
         marker.header.stamp = rospy.Time.now()
-        marker.header.frame_id = 'map'
+        marker.header.frame_id = 'G_ground_frame'
         marker.ns = 'path_trail'
         marker.id = self.num_poses
         marker.type = marker.CUBE
@@ -543,7 +465,7 @@ class NN_jackal():
         # Display RED LINE from along minimum clear distance in front
         # marker = Marker()
         # marker.header.stamp = rospy.Time.now()
-        # marker.header.frame_id = 'map'
+        # marker.header.frame_id = 'odom'
         # marker.ns = 'clear_distance'
         # marker.id = 0
         # marker.type = marker.LINE_LIST
@@ -571,7 +493,7 @@ class NN_jackal():
 
 
 def run():
-    print 'hello world from cadrl_node.py'
+    print ('hello world from cadrl_node.py')
     file_dir = os.path.dirname(os.path.realpath(__file__))
     plt.rcParams.update({'font.size': 18})
     rospack = rospkg.RosPack()
@@ -587,7 +509,7 @@ def run():
     pref_speed = rospy.get_param("~jackal_speed")
     veh_data = {'goal':np.zeros((2,)),'radius':0.5,'pref_speed':pref_speed,'kw':10.0,'kp':1.0,'name':'JA01'}
 
-    print "********\n*******\n*********\nJackal speed:", pref_speed, "\n**********\n******"
+    print ("********\n*******\n*********\nJackal speed:", pref_speed, "\n**********\n******")
 
     nn_jackal = NN_jackal(veh_name, veh_data, nn, actions)
     rospy.on_shutdown(nn_jackal.on_shutdown)

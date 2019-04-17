@@ -13,15 +13,15 @@ class Agent():
         self.goal_global_frame = np.array([goal_x, goal_y], dtype='float64')
         self.vel_global_frame = np.array([pref_speed, 0.0], dtype='float64')
         # self.vel_global_frame = np.array([0.0, 0.0], dtype='float64')
-        self.speed_global_frame = 0.0 
+        self.speed_global_frame = 0.0
         self.heading_global_frame = initial_heading
-        
+
         # Ego Frame states
         self.speed_ego_frame = 0.0
-        self.heading_ego_frame = 0.0 
+        self.heading_ego_frame = 0.0
         self.vel_ego_frame = np.array([0.0, 0.0])
         self.goal_ego_frame = np.array([0.0, 0.0]) # xy coords of goal position
-        
+
         # Store past selected actions
         self.chosen_action_dict = {}
         self.action_time_lag = 0.0
@@ -103,22 +103,20 @@ class Agent():
         dx = selected_speed * np.cos(selected_heading) * dt
         dy = selected_speed * np.sin(selected_heading) * dt
         self.pos_global_frame += np.array([dx, dy])
-        self.vel_global_frame[0] = selected_speed * np.cos(selected_heading)
-        self.vel_global_frame[1] = selected_speed * np.sin(selected_heading)
-        self.speed_global_frame = selected_speed
-        self.heading_global_frame = selected_heading
+        #self.vel_global_frame[0] = selected_speed * np.cos(selected_heading)
+        #self.vel_global_frame[1] = selected_speed * np.sin(selected_heading)
+        #self.speed_global_frame = selected_speed
+        #self.heading_global_frame = selected_heading
 
         # Compute heading w.r.t. ref_prll, ref_orthog coordinate axes
         self.ref_prll, self.ref_orth = self.get_ref()
         ref_prll_angle_global_frame = np.arctan2(self.ref_prll[1], self.ref_prll[0])
         self.heading_ego_frame = util.wrap(self.heading_global_frame - ref_prll_angle_global_frame)
-
         # Compute velocity w.r.t. ref_prll, ref_orthog coordinate axes
         cur_speed = np.linalg.norm(self.vel_global_frame)
         v_prll = cur_speed * np.cos(self.heading_ego_frame)
-        v_orthog = cur_speed * np.sin(self.heading_ego_frame)    
+        v_orthog = cur_speed * np.sin(self.heading_ego_frame)
         self.vel_ego_frame = np.array([v_prll, v_orthog])
-
         # Update time left so agent does not run around forever
         self.time_remaining_to_reach_goal -= dt
         self.t += dt
@@ -141,17 +139,17 @@ class Agent():
             self.ego_state_history = np.vstack([self.ego_state_history, ego_state])
 
     def print_agent_info(self):
-        print '----------'
-        print 'Global Frame:'
-        print '(px,py):', self.pos_global_frame
-        print '(vx,vy):', self.vel_global_frame
-        print '(gx, gy):', self.goal_global_frame
-        print 'speed:', self.speed_global_frame
-        print 'heading:', self.heading_global_frame
-        print 'Body Frame:'
-        print '(vx,vy):', self.vel_ego_frame
-        print 'heading:', self.heading_ego_frame
-        print '----------'
+        print ('----------')
+        print ('Global Frame:')
+        print ('(px,py):', self.pos_global_frame)
+        print ('(vx,vy):', self.vel_global_frame)
+        print ('(gx, gy):', self.goal_global_frame)
+        print ('speed:', self.speed_global_frame)
+        print ('heading:', self.heading_global_frame)
+        print ('Body Frame:')
+        print ('(vx,vy):', self.vel_ego_frame)
+        print ('heading:', self.heading_ego_frame)
+        print ('----------')
 
     def to_vector(self):
         global_state = np.array([self.pos_global_frame[0], self.pos_global_frame[1], \
@@ -163,7 +161,7 @@ class Agent():
     def observe(self, agents):
         #
         # Observation vector is as follows;
-        # [<this_agent_info>, <other_agent_1_info>, <other_agent_2_info>, ... , <other_agent_n_info>] 
+        # [<this_agent_info>, <other_agent_1_info>, <other_agent_2_info>, ... , <other_agent_n_info>]
         # where <this_agent_info> = [id, dist_to_goal, heading (in ego frame)]
         # where <other_agent_i_info> = [pos in this agent's ego parallel coord, pos in this agent's ego orthog coord]
         #
@@ -171,12 +169,11 @@ class Agent():
         obs = np.zeros((Config.FULL_LABELED_STATE_LENGTH))
 
         # Own agent state (ID is removed before inputting to NN, num other agents is used to rearrange other agents into sequence by NN)
-        obs[0] = self.id 
+        obs[0] = self.id
         if Config.MULTI_AGENT_ARCH == 'RNN':
-            obs[Config.AGENT_ID_LENGTH] = 0 
+            obs[Config.AGENT_ID_LENGTH] = 0
         obs[Config.AGENT_ID_LENGTH+Config.FIRST_STATE_INDEX:Config.AGENT_ID_LENGTH+Config.FIRST_STATE_INDEX+Config.HOST_AGENT_STATE_SIZE] = \
                              self.dist_to_goal, self.heading_ego_frame, self.pref_speed, self.radius
-
         other_agent_dists = {}
         for i, other_agent in enumerate(agents):
             if other_agent.id == self.id:
@@ -217,7 +214,7 @@ class Agent():
 
             start_index = Config.AGENT_ID_LENGTH + Config.FIRST_STATE_INDEX + Config.HOST_AGENT_STATE_SIZE + Config.OTHER_AGENT_FULL_OBSERVATION_LENGTH*i
             end_index = Config.AGENT_ID_LENGTH + Config.FIRST_STATE_INDEX + Config.HOST_AGENT_STATE_SIZE + Config.OTHER_AGENT_FULL_OBSERVATION_LENGTH*(i+1)
-            
+
             other_obs = np.array([p_parallel_ego_frame, p_orthog_ego_frame, v_parallel_ego_frame, v_orthog_ego_frame, other_agent.radius, \
                                     combined_radius, dist_2_other])
             if Config.MULTI_AGENT_ARCH in ['WEIGHT_SHARING','VANILLA']:
@@ -225,7 +222,7 @@ class Agent():
             obs[start_index:end_index] = other_obs
             i += 1
 
-            
+
         if Config.MULTI_AGENT_ARCH == 'RNN':
             obs[Config.AGENT_ID_LENGTH] = i # Will be used by RNN for seq_length
         if Config.MULTI_AGENT_ARCH in ['WEIGHT_SHARING','VANILLA']:
@@ -237,7 +234,6 @@ class Agent():
 
         # past_actions = self.past_actions[1:3,:].flatten() # Only adds previous 1 action to state vector
         # obs = np.hstack([obs, past_actions])
-
         return obs
 
     def get_ref(self):

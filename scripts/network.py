@@ -37,10 +37,10 @@ class NetworkVPCore(object):
                 vars = tf.global_variables()
                 self.saver = tf.train.Saver({var.name: var for var in vars}, max_to_keep=0)
 
-    
+
     def _create_graph_inputs(self):
         self.x = tf.placeholder(tf.float32, [None, Config.NN_INPUT_SIZE], name='X')
- 
+
     def _create_graph_outputs(self):
         # FCN
         self.fc1 = tf.layers.dense(inputs=self.final_flat, units = 256, use_bias = True, activation=tf.nn.relu, name = 'fullyconnected1')
@@ -54,7 +54,7 @@ class NetworkVPCore(object):
 
     def simple_load(self, filename=None):
         if filename is None:
-            print "[network.py] Didn't define simple_load filename"
+            print ("[network.py] Didn't define simple_load filename")
         self.saver.restore(self.sess, filename)
 
 class NetworkVP_rnn(NetworkVPCore):
@@ -92,7 +92,7 @@ class NetworkVP_rnn(NetworkVPCore):
 
         self.layer2 = tf.layers.dense(inputs=self.layer1, units=256, activation=tf.nn.relu, name = 'layer2')
         self.final_flat = tf.contrib.layers.flatten(self.layer2)
-        
+
         # Use shared parent class to construct graph outputs/objectives
         self._create_graph_outputs()
 
@@ -133,7 +133,7 @@ class Config:
     if MAX_NUM_AGENTS_IN_ENVIRONMENT > 2:
         if MULTI_AGENT_ARCH == 'RNN':
             # NN input:
-            # [num other agents, dist to goal, heading to goal, pref speed, radius, 
+            # [num other agents, dist to goal, heading to goal, pref speed, radius,
             #   other px, other py, other vx, other vy, other radius, dist btwn, combined radius,
             #   other px, other py, other vx, other vy, other radius, dist btwn, combined radius,
             #   other px, other py, other vx, other vy, other radius, dist btwn, combined radius]
@@ -145,7 +145,7 @@ class Config:
 
             NN_INPUT_AVG_VECTOR = np.hstack([RNN_HELPER_AVG_VECTOR,HOST_AGENT_AVG_VECTOR,np.tile(OTHER_AGENT_AVG_VECTOR,MAX_NUM_OTHER_AGENTS_OBSERVED)])
             NN_INPUT_STD_VECTOR = np.hstack([RNN_HELPER_STD_VECTOR,HOST_AGENT_STD_VECTOR,np.tile(OTHER_AGENT_STD_VECTOR,MAX_NUM_OTHER_AGENTS_OBSERVED)])
-            
+
     FULL_LABELED_STATE_LENGTH = FULL_STATE_LENGTH + AGENT_ID_LENGTH
     NN_INPUT_SIZE = FULL_STATE_LENGTH
 
@@ -170,7 +170,7 @@ if __name__ == '__main__':
         obs[0,4] = np.random.uniform(0.2, 1.5) # radius
         predictions = nn.predict_p(obs, None)[0]
     t_end = time.time()
-    print "avg query time:", (t_end - t_start)/num_queries
-    print "total time:", t_end - t_start
+    print ("avg query time:", (t_end - t_start)/num_queries)
+    print ("total time:", t_end - t_start)
     # action = actions[np.argmax(predictions)]
     # print "action:", action
