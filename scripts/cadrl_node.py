@@ -3,7 +3,7 @@
 import rospy
 import sys
 from std_msgs.msg import Float32, ColorRGBA, Int32
-from geometry_msgs.msg import PoseStamped, Twist, Vector3, Point
+from geometry_msgs.msg import PoseStamped, Twist, Vector3, Point, TransformStamped
 from navigation_msgs.msg import Pedestrians, PlannerMode
 from visualization_msgs.msg import Marker, MarkerArray
 from tf2_msgs.msg import TFMessage
@@ -19,6 +19,7 @@ import os
 
 import rospkg
 from tf.transformations import euler_from_quaternion
+import tf
 
 import network
 import agent
@@ -95,6 +96,7 @@ class NN_jackal():
         # control timer
         self.control_timer = rospy.Timer(rospy.Duration(0.01),self.cbControl)
         self.nn_timer = rospy.Timer(rospy.Duration(0.1),self.cbComputeActionGA3C)
+        self.t = tf.TransformListener(True, rospy.Duration(10.0))
 
     def cbGlobalGoal(self,msg):
         self.new_global_goal_received = True
@@ -111,33 +113,26 @@ class NN_jackal():
         self.operation_mode.mode = self.operation_mode.NN
 
     def cbPose(self, msg):
-        if msg.transforms[0].child_frame_id == "R_robot_base_frame":
-            self.num_poses += 1
+        [translation, rotation] = self.t.lookupTransform("G_ground_frame", "R_robot_base_frame", rospy.Time())
+        euler =  euler_from_quaternion(rotation)
+        self.psi = euler[2]
+        self.pose.pose.position.x = translation[0]
+        self.pose.pose.position.y = translation[1]
+        self.pose.pose.position.z = translation[2]
+        self.pose.pose.orientation.x = rotation[0]
+        self.pose.pose.orientation.y = rotation[1]
+        self.pose.pose.orientation.z = rotation[2]
 
-            #orientation_q = msg.pose.pose.orientation
-            orientation_q = msg.transforms[0].transform.rotation
-            orientation_list = [orientation_q.x, orientation_q.y, orientation_q.z, orientation_q.w]
-            euler =  euler_from_quaternion(orientation_list)
-            self.psi = euler[2]
-            self.pose.pose.position = msg.transforms[0].transform.translation
-            self.pose.pose.orientation= msg.transforms[0].transform.rotation
-            # Dummy: Set goal to be 4m in front of robot.
-            #self.pose.pose.position = msg.pose.pose.position
-            #self.pose.pose.orientation = msg.pose.pose.orientation
-            self.goal.pose.position.x = self.pose.pose.position.x + 4.0 * np.cos(self.psi)
-            self.goal.pose.position.y = self.pose.pose.position.y + 4.0 * np.sin(self.psi)
-            self.visualize_pose(self.pose.pose.position,self.pose.pose.orientation)
-
-            #vel_ego = msg.twist.twist.linear
-            #speed = np.sqrt(np.square(vel_ego.x) + np.square(vel_ego.y))
-            #self.vel.x = speed * np.cos(self.psi)
-            #self.vel.y = speed * np.sin(self.psi)
+        self.goal.pose.position.x = self.pose.pose.position.x + 4.0 * np.cos(self.psi)
+        self.goal.pose.position.y = self.pose.pose.position.y + 4.0 * np.sin(self.psi)
+        self.visualize_pose(self.pose.pose.position,self.pose.pose.orientation)
 
     def cbVel(self, msg):
         vel_ego = msg.twist.twist.linear
         speed = np.sqrt(np.square(vel_ego.x) + np.square(vel_ego.y))
         self.vel.x = speed * np.cos(self.psi)
         self.vel.y = speed * np.sin(self.psi)
+
     def cbPedestrians(self, msg):
         other_agents = []
 
@@ -287,7 +282,7 @@ class NN_jackal():
         other_agents_state = copy.deepcopy(self.other_agents_state)
         obs = host_agent.observe(other_agents_state)[1:]
         obs = np.expand_dims(obs, axis=0)
-        #print ("obs:", obs)
+        print ("obs:", obs)
         predictions = self.nn.predict_p(obs, None)[0]
         #print ("predictions:", predictions)
         # print "best action index:", np.argmax(predictions)
@@ -367,7 +362,7 @@ class NN_jackal():
         marker.action = marker.ADD
         marker.pose.position = pos
         marker.pose.orientation = orientation
-        marker.scale = Vector3(x=0.3,y=0.2,z=1)
+        marker.scale = Vector3(x=0.5,y=0.3,z=0.1)
         marker.color = ColorRGBA(r=1.0,g=1.0,a=1.0)
         marker.lifetime = rospy.Duration(1.0)
         self.pub_pose_marker.publish(marker)
@@ -403,7 +398,7 @@ class NN_jackal():
             # marker.pose.orientation = orientation
             marker.scale = Vector3(x=2*radii[i],y=2*radii[i],z=1)
             marker.color = ColorRGBA(r=1.0,g=0.4,a=1.0)
-            marker.lifetime = rospy.Duration(0.1)
+            marker.lifetime = rospy.Duration(0.5)
             markers.markers.append(marker)
 
             # Display BLUE ARROW from current position to NN desired position

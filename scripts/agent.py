@@ -176,8 +176,8 @@ class Agent():
                              self.dist_to_goal, self.heading_ego_frame, self.pref_speed, self.radius
         other_agent_dists = {}
         for i, other_agent in enumerate(agents):
-            if other_agent.id == self.id:
-                continue
+            #if other_agent.id == self.id:
+                #continue
             # project other elements onto the new reference frame
             rel_pos_to_other_global_frame = other_agent.pos_global_frame - self.pos_global_frame
             dist_between_agent_centers = np.linalg.norm(rel_pos_to_other_global_frame)
@@ -200,8 +200,8 @@ class Agent():
 
         i = 0
         for other_agent in clipped_sorted_agents:
-            if other_agent.id == self.id:
-                continue
+            #if other_agent.id == self.id:
+                #continue
             # project other elements onto the new reference frame
             rel_pos_to_other_global_frame = other_agent.pos_global_frame - self.pos_global_frame
             p_parallel_ego_frame = np.dot(rel_pos_to_other_global_frame, self.ref_prll)
