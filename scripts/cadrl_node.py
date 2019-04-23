@@ -3,7 +3,7 @@
 import rospy
 import sys
 from std_msgs.msg import Float32, ColorRGBA, Int32
-from geometry_msgs.msg import PoseStamped, Twist, Vector3, Point, TransformStamped
+from geometry_msgs.msg import PoseStamped, Twist, Vector3, Point
 from navigation_msgs.msg import Pedestrians, PlannerMode
 from visualization_msgs.msg import Marker, MarkerArray
 from tf2_msgs.msg import TFMessage
@@ -11,7 +11,6 @@ from nav_msgs.msg import Odometry
 
 import numpy as np
 import numpy.matlib
-import pickle
 from matplotlib import cm
 import matplotlib.pyplot as plt
 import copy
@@ -85,9 +84,8 @@ class NN_jackal():
         self.pub_agent_markers = rospy.Publisher('~agent_markers',MarkerArray,queue_size=1)
         self.pub_path_marker = rospy.Publisher('~path_marker',Marker,queue_size=1)
         self.pub_goal_path_marker = rospy.Publisher('~goal_path_marker',Marker,queue_size=1)
-        self.sub_pose = rospy.Subscriber('/tf',TFMessage,self.cbPose)
-        self.sub_vel = rospy.Subscriber('/wheel_odo',Odometry,self.cbVel)
-        #self.sub_vel = rospy.Subscriber('/wheel_odo',Odometry,self.cbPose)
+        self.sub_pose = rospy.Subscriber('~pose',TFMessage,self.cbPose)
+        self.sub_vel = rospy.Subscriber('~wheel_odo',Odometry,self.cbVel)
         self.sub_mode = rospy.Subscriber('~mode',PlannerMode, self.cbPlannerMode)
         self.sub_global_goal = rospy.Subscriber('~goal',PoseStamped, self.cbGlobalGoal)
 
@@ -123,8 +121,8 @@ class NN_jackal():
         self.pose.pose.orientation.y = rotation[1]
         self.pose.pose.orientation.z = rotation[2]
 
-        self.goal.pose.position.x = self.pose.pose.position.x + 4.0 * np.cos(self.psi)
-        self.goal.pose.position.y = self.pose.pose.position.y + 4.0 * np.sin(self.psi)
+        #self.goal.pose.position.x = self.pose.pose.position.x + 4.0 * np.cos(self.psi)
+        #self.goal.pose.position.y = self.pose.pose.position.y + 4.0 * np.sin(self.psi)
         self.visualize_pose(self.pose.pose.position,self.pose.pose.orientation)
 
     def cbVel(self, msg):
@@ -207,10 +205,10 @@ class NN_jackal():
         return v_max
 
     def cbControl(self, event):
-        #if self.goal.header.stamp == rospy.Time(0) or self.stop_moving_flag \
-        #    and not self.new_global_goal_received:
-        #    self.stop_moving()
-        #    return
+        if self.goal.header.stamp == rospy.Time(0) or self.stop_moving_flag \
+            and not self.new_global_goal_received:
+            self.stop_moving()
+            return
         if self.operation_mode.mode==self.operation_mode.NN:
             desired_yaw = self.desired_action[1]
             yaw_error = desired_yaw - self.psi
@@ -260,7 +258,6 @@ class NN_jackal():
             print ('Not in NN mode')
             print (self.operation_mode.mode)
             return
-
         # construct agent_state
         x = self.pose.pose.position.x; y = self.pose.pose.position.y
         v_x = self.vel.x; v_y = self.vel.y
@@ -282,7 +279,7 @@ class NN_jackal():
         other_agents_state = copy.deepcopy(self.other_agents_state)
         obs = host_agent.observe(other_agents_state)[1:]
         obs = np.expand_dims(obs, axis=0)
-        print ("obs:", obs)
+        #print ("obs:", obs)
         predictions = self.nn.predict_p(obs, None)[0]
         #print ("predictions:", predictions)
         # print "best action index:", np.argmax(predictions)

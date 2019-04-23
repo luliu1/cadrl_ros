@@ -1,6 +1,5 @@
 <launch>
 	<arg name="jackal_speed" default="0.5"/>
-	<remap from="/wheel_odo" to="/pioneer_interface/pose"/>
     <!-- Launch neural net ros wrapper -->
     <node pkg="cadrl_ros" type="cadrl_node.py" name="cadrl_node" output="screen" ns="/JA01">
 
@@ -14,13 +13,12 @@
         <remap from="~agent_markers" to="other_agents_markers"/>
 
         <!-- Subscriptions -->
-        <remap from="~pose" to="pose"/>
+        <remap from="~pose" to="/tf"/>
         <remap from="~velocity" to="velocity"/>
         <remap from="~safe_actions" to="local_path_finder/safe_actions"/>
         <remap from="~planner_mode" to="planner_fsm/mode"/>
-        <remap from="~goal" to="move_base_simple/goal"/>
-        <remap from="~clusters" to="cluster/output/clusters"/>
-        <remap from="~peds" to="ped_manager/ped_recent"/>
+        <remap from="~goal" to="/move_base_simple/goal"/>
+				<remap from="~wheel_odo" to="/pioneer_interface/pose"/>
 
         <!-- Parameters -->
         <param name="~jackal_speed" value="$(arg jackal_speed)"/>
