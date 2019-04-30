@@ -2,7 +2,7 @@
 
 import rospy
 import sys
-from std_msgs.msg import Float32, ColorRGBA, Int32
+from std_msgs.msg import Float32, ColorRGBA, Int32, UInt8
 from geometry_msgs.msg import PoseStamped, Twist, Vector3, Point
 from navigation_msgs.msg import Pedestrians, PlannerMode
 from visualization_msgs.msg import Marker, MarkerArray
@@ -15,6 +15,7 @@ from matplotlib import cm
 import matplotlib.pyplot as plt
 import copy
 import os
+import logging
 
 import rospkg
 from tf.transformations import euler_from_quaternion
@@ -70,6 +71,9 @@ class NN_jackal():
         self.d_min = 0.0
         self.new_subgoal_received = False
         self.new_global_goal_received = False
+        self.safety_counter = 0;
+        self.goal_counter = 0;
+        self.time_goal_received = 0;
 
         # visualization
         self.path_marker = Marker()
@@ -88,16 +92,37 @@ class NN_jackal():
         self.sub_vel = rospy.Subscriber('~wheel_odo',Odometry,self.cbVel)
         self.sub_mode = rospy.Subscriber('~mode',PlannerMode, self.cbPlannerMode)
         self.sub_global_goal = rospy.Subscriber('~goal',PoseStamped, self.cbGlobalGoal)
+        self.sub_safety_counter = rospy.Subscriber('/control_safety_level', UInt8, self.cbSafetyCounter)
 
         self.sub_pedestrians = rospy.Subscriber('/pedestrians',Pedestrians, self.cbPedestrians)
 
         # control timer
         self.control_timer = rospy.Timer(rospy.Duration(0.01),self.cbControl)
         self.nn_timer = rospy.Timer(rospy.Duration(0.1),self.cbComputeActionGA3C)
-        self.t = tf.TransformListener(True, rospy.Duration(10.0))
+        self.transform_listener = tf.TransformListener()
+
+        #logging
+        self.logger = logging.getLogger('Collisions')
+        hdlr = logging.FileHandler('cadrl_collisions.log')
+        formatter = logging.Formatter('%(asctime)s %(levelname)s %(message)s')
+        hdlr.setFormatter(formatter)
+        self.logger.addHandler(hdlr)
+        self.logger.setLevel(logging.DEBUG)
+        self.logger.debug('Logging the number of potential collisions & time per path.')
+
+        #logging
+        self.loggerTimings = logging.getLogger('Timings')
+        handler = logging.FileHandler('cadrl_timings.log')
+        hdlr.setFormatter(formatter)
+        self.loggerTimings.addHandler(handler)
+        self.loggerTimings.setLevel(logging.DEBUG)
+        self.loggerTimings.debug('Logging the timings of the network.')
 
     def cbGlobalGoal(self,msg):
         self.new_global_goal_received = True
+        self.goal_counter += 1
+        self.safety_counter = 0
+        self.time_goal_received = rospy.get_time()
         self.global_goal = msg
         self.operation_mode.mode = self.operation_mode.SPIN_IN_PLACE
 
@@ -106,12 +131,17 @@ class NN_jackal():
         self.goal.header = msg.header
         self.new_subgoal_received = True
 
+    def cbSafetyCounter(self,msg):
+        if msg.data > 0:
+            self.safety_counter += 1
+
     def cbPlannerMode(self, msg):
         self.operation_mode = msg
         self.operation_mode.mode = self.operation_mode.NN
 
     def cbPose(self, msg):
-        [translation, rotation] = self.t.lookupTransform("G_ground_frame", "R_robot_base_frame", rospy.Time())
+        self.num_poses += 1
+        (translation, rotation) = self.transform_listener.lookupTransform("G_ground_frame", "R_robot_base_frame", rospy.Time(0))
         euler =  euler_from_quaternion(rotation)
         self.psi = euler[2]
         self.pose.pose.position.x = translation[0]
@@ -120,6 +150,7 @@ class NN_jackal():
         self.pose.pose.orientation.x = rotation[0]
         self.pose.pose.orientation.y = rotation[1]
         self.pose.pose.orientation.z = rotation[2]
+        self.pose.pose.orientation.w = rotation[3]
 
         #self.goal.pose.position.x = self.pose.pose.position.x + 4.0 * np.cos(self.psi)
         #self.goal.pose.position.y = self.pose.pose.position.y + 4.0 * np.sin(self.psi)
@@ -142,8 +173,7 @@ class NN_jackal():
             y = msg.people[i].position.y
             v_x = msg.people[i].velocity.x
             v_y = msg.people[i].velocity.y
-            radius = max(PED_RADIUS, msg.radii[i])
-
+            radius = PED_RADIUS#max(PED_RADIUS, msg.radii[i])
 
             xs.append(x); ys.append(y); radii.append(radius);
             labels.append(index); v_xs.append(v_x); v_ys.append(v_y);
@@ -205,10 +235,10 @@ class NN_jackal():
         return v_max
 
     def cbControl(self, event):
-        if self.goal.header.stamp == rospy.Time(0) or self.stop_moving_flag \
-            and not self.new_global_goal_received:
-            self.stop_moving()
-            return
+        #if self.goal.header.stamp == rospy.Time(0) or self.stop_moving_flag \
+        #    and not self.new_global_goal_received:
+        #    self.stop_moving()
+        #    return
         if self.operation_mode.mode==self.operation_mode.NN:
             desired_yaw = self.desired_action[1]
             yaw_error = desired_yaw - self.psi
@@ -254,6 +284,7 @@ class NN_jackal():
             return
 
     def cbComputeActionGA3C(self, event):
+        startTime = rospy.Time.now();
         if self.operation_mode.mode!=self.operation_mode.NN:
             print ('Not in NN mode')
             print (self.operation_mode.mode)
@@ -285,14 +316,11 @@ class NN_jackal():
         # print "best action index:", np.argmax(predictions)
         raw_action = copy.deepcopy(self.actions[np.argmax(predictions)])
         action = np.array([pref_speed*raw_action[0], util.wrap(raw_action[1] + self.psi)])
-        if raw_action[0] < 1.0:
-            print ("Slowed down", raw_action[0])
         # print "raw_action:", raw_action
         # print "action:", action
         # if close to goal
         kp_v = 0.5
         kp_r = 1
-
         if host_agent.dist_to_goal < 2.0: # and self.percentComplete>=0.9:
             # print "somewhat close to goal"
             pref_speed = max(min(kp_v * (host_agent.dist_to_goal-0.1), pref_speed), 0.0)
@@ -300,11 +328,16 @@ class NN_jackal():
             turn_amount = max(min(kp_r * (host_agent.dist_to_goal-0.1), 1.0), 0.0) * raw_action[1]
             action[1] = util.wrap(turn_amount + self.psi)
         if host_agent.dist_to_goal < 0.3:
+            if self.goal_counter > 0 and not self.stop_moving_flag:
+                self.logger.debug('Number of collisions for run %s: %s', self.goal_counter, self.safety_counter)
+                self.logger.debug('Time to get to goal: %s', rospy.get_time()-self.time_goal_received)
             self.stop_moving_flag = True
         else:
             self.stop_moving_flag = False
 
         # print 'chosen action (rel angle)', action[0], action[1]
+        timingNetwork = rospy.Time.now() - startTime
+        self.loggerTimings.debug('%s', timingNetwork.nsecs)
         self.update_action(action)
 
     def update_subgoal(self,subgoal):
