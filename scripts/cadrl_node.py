@@ -2,12 +2,15 @@
 
 import rospy
 import sys
+import configparser
 from std_msgs.msg import Float32, ColorRGBA, Int32, UInt8
 from geometry_msgs.msg import PoseStamped, Twist, Vector3, Point
 from navigation_msgs.msg import Pedestrians, PlannerMode
 from visualization_msgs.msg import Marker, MarkerArray
 from tf2_msgs.msg import TFMessage
 from nav_msgs.msg import Odometry
+from crowd_nav_policy import SARL
+from crowd_sim_utils import FullState, ObservableState, JointState, ActionXY
 
 import numpy as np
 import numpy.matlib
@@ -20,6 +23,7 @@ import logging
 import rospkg
 from tf.transformations import euler_from_quaternion
 import tf
+import torch
 
 import network
 import agent
@@ -50,6 +54,7 @@ class NN_jackal():
         # self.value_net = value_net
         self.operation_mode = PlannerMode()
         self.operation_mode.mode = self.operation_mode.NN
+        self.time_step = 0.25
 
         # for subscribers
         self.pose = PoseStamped()
@@ -98,7 +103,7 @@ class NN_jackal():
 
         # control timer
         self.control_timer = rospy.Timer(rospy.Duration(0.01),self.cbControl)
-        self.nn_timer = rospy.Timer(rospy.Duration(0.1),self.cbComputeActionGA3C)
+        self.nn_timer = rospy.Timer(rospy.Duration(0.1),self.cbComputeActionSARL)
         self.transform_listener = tf.TransformListener()
 
         #logging
@@ -282,6 +287,62 @@ class NN_jackal():
         else:
             self.stop_moving()
             return
+
+    def cbComputeActionSARL(self, event):
+        occupancy_maps = None
+        probability = np.random.random()
+        pref_speed = self.veh_data['pref_speed']
+
+        action_values = list()
+        max_value = float('-inf')
+        max_action = None
+
+        x = self.pose.pose.position.x; y = self.pose.pose.position.y
+        v_x = self.vel.x; v_y = self.vel.y
+        radius = self.veh_data['radius']; turning_dir = 0.0
+        heading_angle = self.psi
+        pref_speed = self.veh_data['pref_speed']
+        goal_x = self.goal.pose.position.x; goal_y = self.goal.pose.position.y
+        # in case current speed is larger than desired speed
+        v = np.linalg.norm(np.array([v_x, v_y]))
+        if v > pref_speed:
+            v_x = v_x * pref_speed / v
+            v_y = v_y * pref_speed / v
+
+        full_state = FullState(x, y, v_x, v_y, radius, goal_x, goal_y, pref_speed, heading_angle)
+        ob = [ObservableState(other_agent.pos_global_frame[0], other_agent.pos_global_frame[1], other_agent.vel_global_frame[0], other_agent.vel_global_frame[1], other_agent.radius) for other_agent in self.other_agents_state]
+        state = JointState(full_state, ob)
+        if len(state.human_states) > 0:
+            for action in self.nn.action_space:
+                next_self_state = self.nn.propagate(state.self_state, action)
+                next_human_states = [self.nn.propagate(human_state, ActionXY(human_state.vx, human_state.vy))
+                                   for human_state in state.human_states]
+                reward = self.nn.compute_reward(next_self_state, next_human_states)
+                batch_next_states = torch.cat([torch.Tensor([next_self_state + next_human_state]).to(self.nn.device)
+                                              for next_human_state in next_human_states], dim=0)
+                rotated_batch_input = self.nn.rotate(batch_next_states).unsqueeze(0)
+                if self.nn.with_om:
+                    if occupancy_maps is None:
+                        occupancy_maps = self.nn.build_occupancy_maps(next_human_states).unsqueeze(0)
+                    rotated_batch_input = torch.cat([rotated_batch_input, occupancy_maps], dim=2)
+                # VALUE UPDATE
+                next_state_value = self.nn.model(rotated_batch_input).data.item()
+                value = reward + pow(self.nn.gamma, self.time_step * pref_speed) * next_state_value
+                action_values.append(value)
+                if value > max_value:
+                    max_value = value
+                    max_action = action
+                print ("People detected", max_action)
+        else:
+            max_action = np.zeros((2,))
+            max_action[0] = pref_speed
+            angle_to_goal= np.arctan2(goal_y - y, goal_x - x)
+            max_action[1] = angle_to_goal
+            print(max_action)
+        if max_action is None:
+            raise ValueError('Value network is not well trained. ')
+
+        self.update_action(max_action)
 
     def cbComputeActionGA3C(self, event):
         startTime = rospy.Time.now();
@@ -525,13 +586,25 @@ def run():
 
     a = network.Actions()
     actions = a.actions
-    num_actions = a.num_actions
-    nn = network.NetworkVP_rnn(network.Config.DEVICE, 'network', num_actions)
-    nn.simple_load(rospack.get_path('cadrl_ros')+'/checkpoints/network_01900000')
+    #num_actions = a.num_actions
+    #nn = network.NetworkVP_rnn(network.Config.DEVICE, 'network', num_actions)
+    #nn.simple_load(rospack.get_path('cadrl_ros')+'/checkpoints/network_01900000')
+    nn = SARL()
+    policy_config_file = '/home/lucia/catkin_ws/src/cadrl_ros/scripts/configs/policy.config'
+    policy_config = configparser.RawConfigParser()
+    policy_config.read(policy_config_file)
+    nn.configure(policy_config)
+    model_weights = os.path.join('/home/lucia/catkin_ws/src/cadrl_ros/src/crowd_nav/data/output_om', 'rl_model.pth')
+    if nn.trainable:
+        nn.get_model().load_state_dict(torch.load(model_weights))
+    nn.set_phase('test')
+    device = torch.device("cpu")
+    nn.set_device(device)
 
     rospy.init_node('nn_jackal',anonymous=False)
     veh_name = 'JA01'
     pref_speed = rospy.get_param("~jackal_speed")
+    nn.build_action_space(pref_speed)
     veh_data = {'goal':np.zeros((2,)),'radius':0.5,'pref_speed':pref_speed,'kw':10.0,'kp':1.0,'name':'JA01'}
 
     print ("********\n*******\n*********\nJackal speed:", pref_speed, "\n**********\n******")
