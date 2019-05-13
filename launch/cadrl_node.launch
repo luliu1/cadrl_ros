@@ -1,6 +1,8 @@
 <launch>
 
-	<include file="$(find stereo_blockmatcher)/launch/realtime_pipeline.launch" />
+	<include file="$(find stereo_blockmatcher)/launch/real_time_pipeline.launch" />
+	<node pkg="cadrl_ros" type="pedestrian_merger_node.py" name="pedestrian_merger_node"/>
+	
 
 	<arg name="jackal_speed" default="0.5"/>
     <!-- Launch neural net ros wrapper -->
@@ -27,5 +29,6 @@
         <param name="~jackal_speed" value="$(arg jackal_speed)"/>
 
     </node>
+
 	<!--node type="rviz" name="rviz" pkg="rviz"/-->
 </launch>

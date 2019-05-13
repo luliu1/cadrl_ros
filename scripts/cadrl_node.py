@@ -99,7 +99,7 @@ class NN_jackal():
         self.sub_global_goal = rospy.Subscriber('~goal',PoseStamped, self.cbGlobalGoal)
         self.sub_safety_counter = rospy.Subscriber('/control_safety_level', UInt8, self.cbSafetyCounter)
 
-        self.sub_pedestrians = rospy.Subscriber('/pedestrians',Pedestrians, self.cbPedestrians)
+        self.sub_pedestrians = rospy.Subscriber('/combined_pedestrians',Pedestrians, self.cbPedestrians)
 
         # control timer
         self.control_timer = rospy.Timer(rospy.Duration(0.01),self.cbControl)
@@ -332,13 +332,13 @@ class NN_jackal():
                 if value > max_value:
                     max_value = value
                     max_action = action
-                print ("People detected", max_action)
+                # print ("People detected", max_action)
         else:
             max_action = np.zeros((2,))
             max_action[0] = pref_speed
             angle_to_goal= np.arctan2(goal_y - y, goal_x - x)
             max_action[1] = angle_to_goal
-            print(max_action)
+            # print(max_action)
         if max_action is None:
             raise ValueError('Value network is not well trained. ')
 
