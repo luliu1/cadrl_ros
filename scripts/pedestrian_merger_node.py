@@ -50,7 +50,7 @@ class PedestrianPublisher():
 def run():
     rospy.init_node('pedestrian_publisher',anonymous=False)
     pedestrian_publisher = PedestrianPublisher()
-    rate = rospy.Rate(10)
+    rate = rospy.Rate(20)
 
     while not rospy.is_shutdown():
         pedestrian_publisher.publishPedestrian();

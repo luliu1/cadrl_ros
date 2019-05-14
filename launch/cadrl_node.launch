@@ -1,6 +1,10 @@
 <launch>
 
-	<include file="$(find stereo_blockmatcher)/launch/real_time_pipeline.launch" />
+	<include file="$(find stereo_blockmatcher)/launch/real_time_pipeline.launch">
+	<arg name="args" value="-use_ros_now_instead_of_timestamp=0" />	
+	</include>
+
+	<include file="$(find obstacle_detector)/launch/nodes.launch"/>
 	<node pkg="cadrl_ros" type="pedestrian_merger_node.py" name="pedestrian_merger_node"/>
 	
 
