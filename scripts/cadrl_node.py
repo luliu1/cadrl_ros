@@ -333,6 +333,7 @@ class NN_jackal():
                     max_value = value
                     max_action = action
                 # print ("People detected", max_action)
+            max_action = np.array([max_action[0], util.wrap(max_action[1] + self.psi)])
         else:
             max_action = np.zeros((2,))
             max_action[0] = pref_speed
@@ -341,7 +342,6 @@ class NN_jackal():
             # print(max_action)
         if max_action is None:
             raise ValueError('Value network is not well trained. ')
-
         self.update_action(max_action)
 
     def cbComputeActionGA3C(self, event):
@@ -586,9 +586,11 @@ def run():
 
     a = network.Actions()
     actions = a.actions
+    #HERE for CADRL
     #num_actions = a.num_actions
     #nn = network.NetworkVP_rnn(network.Config.DEVICE, 'network', num_actions)
     #nn.simple_load(rospack.get_path('cadrl_ros')+'/checkpoints/network_01900000')
+    #HERE for SARL
     nn = SARL()
     policy_config_file = '/home/lucia/catkin_ws/src/cadrl_ros/scripts/configs/policy.config'
     policy_config = configparser.RawConfigParser()
@@ -600,7 +602,7 @@ def run():
     nn.set_phase('test')
     device = torch.device("cpu")
     nn.set_device(device)
-
+    #TO HERE
     rospy.init_node('nn_jackal',anonymous=False)
     veh_name = 'JA01'
     pref_speed = rospy.get_param("~jackal_speed")
