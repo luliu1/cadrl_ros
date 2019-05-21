@@ -103,7 +103,7 @@ class NN_jackal():
 
         # control timer
         self.control_timer = rospy.Timer(rospy.Duration(0.01),self.cbControl)
-        self.nn_timer = rospy.Timer(rospy.Duration(0.1),self.cbComputeActionSARL)
+        self.nn_timer = rospy.Timer(rospy.Duration(0.1),self.cbComputeActionGA3C)
         self.transform_listener = tf.TransformListener()
 
         #logging
@@ -289,6 +289,7 @@ class NN_jackal():
             return
 
     def cbComputeActionSARL(self, event):
+        startTime = rospy.Time.now();
         occupancy_maps = None
         probability = np.random.random()
         pref_speed = self.veh_data['pref_speed']
@@ -342,7 +343,10 @@ class NN_jackal():
             # print(max_action)
         if max_action is None:
             raise ValueError('Value network is not well trained. ')
+        timingNetwork = rospy.Time.now() - startTime
+        self.loggerTimings.debug('%s', timingNetwork.nsecs)
         self.update_action(max_action)
+
 
     def cbComputeActionGA3C(self, event):
         startTime = rospy.Time.now();
@@ -587,26 +591,26 @@ def run():
     a = network.Actions()
     actions = a.actions
     #HERE for CADRL
-    #num_actions = a.num_actions
-    #nn = network.NetworkVP_rnn(network.Config.DEVICE, 'network', num_actions)
-    #nn.simple_load(rospack.get_path('cadrl_ros')+'/checkpoints/network_01900000')
+    num_actions = a.num_actions
+    nn = network.NetworkVP_rnn(network.Config.DEVICE, 'network', num_actions)
+    nn.simple_load(rospack.get_path('cadrl_ros')+'/checkpoints/network_01900000')
     #HERE for SARL
-    nn = SARL()
-    policy_config_file = '/home/lucia/catkin_ws/src/cadrl_ros/scripts/configs/policy.config'
-    policy_config = configparser.RawConfigParser()
-    policy_config.read(policy_config_file)
-    nn.configure(policy_config)
-    model_weights = os.path.join('/home/lucia/catkin_ws/src/cadrl_ros/src/crowd_nav/data/output_om', 'rl_model.pth')
-    if nn.trainable:
-        nn.get_model().load_state_dict(torch.load(model_weights))
-    nn.set_phase('test')
-    device = torch.device("cpu")
-    nn.set_device(device)
+    #nn = SARL()
+    #policy_config_file = '/home/lucia/catkin_ws/src/cadrl_ros/scripts/configs/policy.config'
+    #policy_config = configparser.RawConfigParser()
+    #policy_config.read(policy_config_file)
+    #nn.configure(policy_config)
+    #model_weights = os.path.join('/home/lucia/catkin_ws/src/cadrl_ros/src/crowd_nav/data/output_om', 'rl_model.pth')
+    #if nn.trainable:
+    #    nn.get_model().load_state_dict(torch.load(model_weights))
+    #nn.set_phase('test')
+    #device = torch.device("cpu")
+    #nn.set_device(device)
     #TO HERE
     rospy.init_node('nn_jackal',anonymous=False)
     veh_name = 'JA01'
     pref_speed = rospy.get_param("~jackal_speed")
-    nn.build_action_space(pref_speed)
+    #nn.build_action_space(pref_speed)
     veh_data = {'goal':np.zeros((2,)),'radius':0.5,'pref_speed':pref_speed,'kw':10.0,'kp':1.0,'name':'JA01'}
 
     print ("********\n*******\n*********\nJackal speed:", pref_speed, "\n**********\n******")
